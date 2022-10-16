@@ -28,9 +28,12 @@
 static const char *TAG = "VIRTUAL_ESP";
 char uri[] = "mqtt://mqtt.bucknell.edu/";
 char str_mac_addr[18];
+
 esp_mqtt_client_handle_t client;
 
 static spi_device_handle_t device_handle;
+
+int spi_busy = 0;
 
 #if CONFIG_BROKER_CERTIFICATE_OVERRIDDEN == 1
 static const uint8_t mqtt_eclipseprojects_io_pem_start[] = "-----BEGIN CERTIFICATE-----\n" CONFIG_BROKER_CERTIFICATE_OVERRIDE "\n-----END CERTIFICATE-----";
@@ -108,9 +111,10 @@ static void spi_command_handler(char *t_parser, char data_str[])
             ESP_LOGE(TAG, "BAD_DATA");
         }
     }
-    else if (strcmp(t_parser, "device_queue_trans") == 0)
+    else if (strcmp(t_parser, "device_transmit") == 0)
     {
-        ESP_LOGI(TAG, "QUEUE_TRANS");
+        esp_err_t err = ESP_FAIL;
+        ESP_LOGI(TAG, "DEVICE_TRANSMIT");
         int length;
 
         const char d_delim[2] = ",";
@@ -120,12 +124,17 @@ static void spi_command_handler(char *t_parser, char data_str[])
 
         length = atoi(d_parser);
         d_parser = strtok(NULL, d_delim);
-        
+
         void *tx_buffer = heap_caps_malloc(length, MALLOC_CAP_DMA | MALLOC_CAP_32BIT);
+        if (tx_buffer == NULL) {
+            ESP_LOGE(TAG, "HEAP_CAPS_MALLOC");
+            err = ESP_ERR_NO_MEM;
+            return err;
+        }
         memset(tx_buffer, 0, length);
 
-        int i = 4;
-        while ((i < length*4) && (d_parser != NULL))
+        int i = 0;
+        while ((i < length) && (d_parser != NULL))
         {
             ((uint8_t *)tx_buffer)[i] = (uint8_t)atoi(d_parser);
             d_parser = strtok(NULL, d_delim);
@@ -135,7 +144,15 @@ static void spi_command_handler(char *t_parser, char data_str[])
             .length = length * 8,
             .tx_buffer = tx_buffer,
         };
-        spi_device_queue_trans(device_handle, &trans_desc, portMAX_DELAY);
+
+        spi_busy = 1;
+        err = spi_device_transmit(device_handle, &trans_desc);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "DEVICE_TRANSMIT: %s", esp_err_to_name(err));
+            return err;
+        }
+        heap_caps_free(tx_buffer);
+        spi_busy = 0;
     }
     else
     {
@@ -279,7 +296,11 @@ static void esp_command_handler(esp_mqtt_event_handle_t event)
     {
         ESP_LOGI(TAG, "SPI_COMMAND_READ");
         t_parser = strtok(NULL, t_delim);
-        spi_command_handler(t_parser, data_str);
+        if (spi_busy == 0) {
+            spi_command_handler(t_parser, data_str);
+        } else {
+            ESP_LOGI(TAG, "SPI_BUSY");
+        }
     }
     else
     {
