@@ -22,6 +22,9 @@
 #include "driver/ledc.h"
 #include <driver/spi_master.h>
 
+// TEMP
+#include "rc522.h"
+
 #define TOPIC_MAX_LEN 250
 #define DATA_MAX_LEN 250
 
@@ -41,6 +44,14 @@ static const uint8_t mqtt_eclipseprojects_io_pem_start[] = "-----BEGIN CERTIFICA
 extern const uint8_t mqtt_eclipseprojects_io_pem_start[] asm("_binary_mqtt_eclipseprojects_io_pem_start");
 #endif
 extern const uint8_t mqtt_eclipseprojects_io_pem_end[] asm("_binary_mqtt_eclipseprojects_io_pem_end");
+
+// TEMP
+void tag_handler(uint8_t* sn) { // serial number is always 5 bytes long
+    ESP_LOGI(TAG, "Tag: %#x %#x %#x %#x %#x",
+        sn[0], sn[1], sn[2], sn[3], sn[4]
+    );
+}
+
 
 static void IRAM_ATTR gpio_isr_handler(void *arg)
 {
@@ -73,7 +84,6 @@ static void spi_command_handler(char *t_parser, char data_str[])
                 .sclk_io_num = sclk_io_num,
                 .quadwp_io_num = quadwp_io_num,
                 .max_transfer_sz = max_transfer_sz,
-                .flags = SPICOMMON_BUSFLAG_MASTER,
             };
             spi_bus_initialize((spi_host_device_t)host_id, &bus_config, (spi_dma_chan_t)dma_chan);
         }
@@ -103,6 +113,7 @@ static void spi_command_handler(char *t_parser, char data_str[])
                 .spics_io_num = spics_io_num,
                 .clock_speed_hz = clock_speed_hz,
                 .queue_size = queue_size,
+                .flags = SPI_DEVICE_HALFDUPLEX
             };
             spi_bus_add_device((spi_host_device_t)host_id_new, &dev_config, &device_handle);
         }
@@ -116,6 +127,7 @@ static void spi_command_handler(char *t_parser, char data_str[])
         esp_err_t err = ESP_FAIL;
         ESP_LOGI(TAG, "DEVICE_TRANSMIT");
         int length;
+        int rxlength;
 
         const char d_delim[2] = ",";
         char *d_parser;
@@ -124,8 +136,11 @@ static void spi_command_handler(char *t_parser, char data_str[])
 
         length = atoi(d_parser);
         d_parser = strtok(NULL, d_delim);
+        rxlength = atoi(d_parser);
+        d_parser = strtok(NULL, d_delim);
 
         void *tx_buffer = heap_caps_malloc(length, MALLOC_CAP_DMA | MALLOC_CAP_32BIT);
+        void *rx_buffer = heap_caps_malloc(rxlength, MALLOC_CAP_DMA | MALLOC_CAP_32BIT);
         if (tx_buffer == NULL) {
             ESP_LOGE(TAG, "HEAP_CAPS_MALLOC");
             err = ESP_ERR_NO_MEM;
@@ -143,6 +158,8 @@ static void spi_command_handler(char *t_parser, char data_str[])
         spi_transaction_t trans_desc = {
             .length = length * 8,
             .tx_buffer = tx_buffer,
+            .rxlength = rxlength * 8,
+            .rx_buffer = rx_buffer
         };
 
         spi_busy = 1;
@@ -151,7 +168,20 @@ static void spi_command_handler(char *t_parser, char data_str[])
             ESP_LOGE(TAG, "DEVICE_TRANSMIT: %s", esp_err_to_name(err));
             return err;
         }
+        
+        if (rxlength > 0) {
+            char msg_str[3*rxlength + 1];
+            int msg_i = 0;
+            for (int i = 0; i < rxlength; i++) {
+                msg_i += sprintf(&msg_str[msg_i], "%i,", ((uint8_t *)rx_buffer)[i]);
+                ESP_LOGI(TAG, "DEVICE_TRANSMIT message_read=%i", ((uint8_t *)rx_buffer)[i]);
+            }
+            int msg_id = esp_mqtt_client_publish(client, "/console/spi/device_transmit", msg_str, 0, 0, 0);
+            ESP_LOGI(TAG, "DEVICE_TRANSMIT published, MSG_ID=%d", msg_id);
+        }
+
         heap_caps_free(tx_buffer);
+        heap_caps_free(rx_buffer);
         spi_busy = 0;
     }
     else
@@ -296,11 +326,10 @@ static void esp_command_handler(esp_mqtt_event_handle_t event)
     {
         ESP_LOGI(TAG, "SPI_COMMAND_READ");
         t_parser = strtok(NULL, t_delim);
-        if (spi_busy == 0) {
-            spi_command_handler(t_parser, data_str);
-        } else {
+        while (spi_busy == 1) {
             ESP_LOGI(TAG, "SPI_BUSY");
         }
+        spi_command_handler(t_parser, data_str);
     }
     else
     {
@@ -419,6 +448,22 @@ static void mqtt_app_start(void)
 
 void app_main(void)
 {
+    // TEMP
+        const rc522_start_args_t start_args = {
+        .miso_io  = 33,
+        .mosi_io  = 34,
+        .sck_io   = 35,
+        .sda_io   = 15,
+        .callback = &tag_handler,
+
+        // Uncomment next line for attaching RC522 to SPI2 bus. Default is VSPI_HOST (SPI3)
+        //.spi_host_id = HSPI_HOST
+    };
+
+    rc522_start(start_args);
+
+    // TEMP end
+
     ESP_LOGI(TAG, "[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
     ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
@@ -438,5 +483,5 @@ void app_main(void)
 
     ESP_ERROR_CHECK(example_connect());
 
-    mqtt_app_start();
+    // mqtt_app_start();
 }
