@@ -21,15 +21,16 @@ client.on_message = on_message
 client.on_connect = on_connect
 
 peripheralTopic = "/gpio/"
-gpioPin = "5"
+gpioPin = "13"
 
 # reset the pin to use
 print(f"Initializing GPIO Pin {gpioPin}")
 client.publish(peripheralTopic + "reset_pin", gpioPin)
 client.publish(peripheralTopic + "set_direction",
                ",".join([gpioPin, "1"]))
+client.publish(peripheralTopic + "pulldown_en", gpioPin)
 client.publish(peripheralTopic + "set_intr_type",
-               ",".join([gpioPin, "3"]))
+               ",".join([gpioPin, "1"]))
 client.publish(peripheralTopic + "install_isr_service")
 client.publish(peripheralTopic + "isr_handler_add", gpioPin)
 

@@ -2,6 +2,7 @@ import paho.mqtt.client as mqtt
 import paho.mqtt.subscribe as subscribe
 import time
 import random
+import queue
 
 mqttBroker = "mqtt.bucknell.edu"
 mqttPort = "7cdfa194a9"
@@ -12,8 +13,7 @@ client.connect(mqttBroker)
 peripheralTopic = "/spi/"
 qos = 2
 
-is_msg = False
-msg_str = ''
+q = queue.Queue()
 
 def on_connect(client, userdata, flags, rc):
     client.subscribe("/console/spi/device_transmit")
@@ -23,10 +23,8 @@ def on_log(client, userdata, level, buf):
 
 def on_message(client, userdata, msg):
     # print(msg.topic+" "+str(msg.payload))
-    global is_msg
-    global msg_str
-    is_msg = True
     msg_str = msg.payload.decode('utf-8', errors='replace')
+    q.put(msg_str)
 
 client.loop_start()
 # client.on_log=on_log
@@ -37,7 +35,7 @@ client.publish(peripheralTopic + "bus_initialize",
                ",".join(["2", "34", "33", "35", "-1", "-1", "0", "0", "0", "0"]), qos=qos)
 time.sleep(0.5)
 client.publish(peripheralTopic + "bus_add_device",
-               ",".join(["2", "0", "0", "0", "0", "15", "5000000", "7"]), qos=qos)
+               ",".join(["2", "0", "0", "0", "0", "15", "5000000", "7", "1", "16"]), qos=qos)
 
 def clear_bitmask(addr, mask):
     # print('clear_bitmask')
@@ -108,41 +106,25 @@ def write_to_card(command, send_data):
 
 def read(addr):
     # print('read')
-    global is_msg
-    global msg_str
-    spi_arr_str = "1,1," + ",".join([str(int((addr << 1) & 0x7E | 0x80))])
+    spi_arr_str = "1,1,1," + ",".join([str(int((addr << 1) & 0x7E | 0x80))])
     client.publish(peripheralTopic + "device_transmit", spi_arr_str, qos=qos)
     # event class
-    while (not is_msg) and (len(msg_str) <= 0):
-        # timeout or message queue
-        pass
+    try:
+        msg_str = q.get(timeout=0.5)
+    except:
+        return read(addr)
     retval = int(msg_str.split(',')[0])
-    is_msg = False
-    msg_str = ''
-    return retval
-
-def read_n(addr, n):
-    # print('read')
-    global is_msg
-    global msg_str
-    spi_arr_str = f"1,{n}," + ",".join([str(int((addr << 1) & 0x7E))])
-    client.publish(peripheralTopic + "device_transmit", spi_arr_str, qos=qos)
-    while (not is_msg) and (len(msg_str) <= 0):
-        pass
-    retval = int(msg_str.split(',')[0])
-    is_msg = False
-    msg_str = ''
     return retval
 
 def write(addr, val):
     # print('write')
-    spi_arr_str = "2,0," + ",".join([str(int((addr << 1) & 0x7E)), str(int(val))])
+    spi_arr_str = "2,0,1," + ",".join([str(int((addr << 1) & 0x7E)), str(int(val))])
     client.publish(peripheralTopic + "device_transmit", spi_arr_str, qos=qos)
 
 def write_n(addr, val_arr, n):
     # print('write')
     val_arr = [str(int((addr << 1) & 0x7E))] + val_arr
-    spi_arr_str = f"{n + 1},0," + ",".join(val_arr)
+    spi_arr_str = f"{n + 1},0,1," + ",".join(val_arr)
     client.publish(peripheralTopic + "device_transmit", spi_arr_str, qos=qos)
 
 def request():
@@ -160,12 +142,12 @@ def anticoll():
 
 counter = 1
 try:
-    # client.publish("/gpio/reset_pin", "5")
-    # client.publish("/gpio/set_direction",
-    #             ",".join(["5", "2"]))
-    # client.publish("/gpio/set_level",
-    #             ",".join(["5", "0"]))
-    # time.sleep(1)
+    client.publish("/gpio/reset_pin", "5")
+    client.publish("/gpio/set_direction",
+                ",".join(["5", "2"]))
+    client.publish("/gpio/set_level",
+                ",".join(["5", "1"]))
+    time.sleep(1)
     # client.publish("/gpio/reset_pin", "5")
     # client.publish("/gpio/set_direction",
     #             ",".join(["5", "2"]))

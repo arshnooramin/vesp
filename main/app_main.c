@@ -22,9 +22,6 @@
 #include "driver/ledc.h"
 #include <driver/spi_master.h>
 
-// TEMP
-#include "rc522.h"
-
 #define TOPIC_MAX_LEN 250
 #define DATA_MAX_LEN 250
 
@@ -33,8 +30,8 @@ char uri[] = "mqtt://mqtt.bucknell.edu/";
 char str_mac_addr[18];
 
 esp_mqtt_client_handle_t client;
-
-static spi_device_handle_t device_handle;
+spi_device_handle_t device_handle_1;
+spi_device_handle_t device_handle_2;
 
 int spi_busy = 0;
 
@@ -44,14 +41,6 @@ static const uint8_t mqtt_eclipseprojects_io_pem_start[] = "-----BEGIN CERTIFICA
 extern const uint8_t mqtt_eclipseprojects_io_pem_start[] asm("_binary_mqtt_eclipseprojects_io_pem_start");
 #endif
 extern const uint8_t mqtt_eclipseprojects_io_pem_end[] asm("_binary_mqtt_eclipseprojects_io_pem_end");
-
-// TEMP
-void tag_handler(uint8_t* sn) { // serial number is always 5 bytes long
-    ESP_LOGI(TAG, "Tag: %#x %#x %#x %#x %#x",
-        sn[0], sn[1], sn[2], sn[3], sn[4]
-    );
-}
-
 
 static void IRAM_ATTR gpio_isr_handler(void *arg)
 {
@@ -83,7 +72,7 @@ static void spi_command_handler(char *t_parser, char data_str[])
                 .miso_io_num = miso_io_num,
                 .sclk_io_num = sclk_io_num,
                 .quadwp_io_num = quadwp_io_num,
-                .max_transfer_sz = max_transfer_sz,
+                .max_transfer_sz = max_transfer_sz
             };
             spi_bus_initialize((spi_host_device_t)host_id, &bus_config, (spi_dma_chan_t)dma_chan);
         }
@@ -94,7 +83,7 @@ static void spi_command_handler(char *t_parser, char data_str[])
     }
     else if (strcmp(t_parser, "bus_add_device") == 0)
     {
-        int host_id_new;
+        int host_id;
         int command_bits;
         int address_bits;
         int dummy_bits;
@@ -102,8 +91,10 @@ static void spi_command_handler(char *t_parser, char data_str[])
         int spics_io_num;
         int clock_speed_hz;
         int queue_size;
+        int handle_id;
+        int flags;
         ESP_LOGI(TAG, "BUS_ADD_DEVICE");
-        if (sscanf(data_str, "%i,%i,%i,%i,%i,%i,%i,%i", &host_id_new, &command_bits, &address_bits, &dummy_bits, &mode, &spics_io_num, &clock_speed_hz, &queue_size))
+        if (sscanf(data_str, "%i,%i,%i,%i,%i,%i,%i,%i,%i,%i", &host_id, &command_bits, &address_bits, &dummy_bits, &mode, &spics_io_num, &clock_speed_hz, &queue_size, &handle_id, &flags))
         {
             spi_device_interface_config_t dev_config = {
                 .command_bits = command_bits,
@@ -113,9 +104,20 @@ static void spi_command_handler(char *t_parser, char data_str[])
                 .spics_io_num = spics_io_num,
                 .clock_speed_hz = clock_speed_hz,
                 .queue_size = queue_size,
-                .flags = SPI_DEVICE_HALFDUPLEX
+                .flags = flags
             };
-            spi_bus_add_device((spi_host_device_t)host_id_new, &dev_config, &device_handle);
+            if (handle_id == 1) {
+                spi_bus_add_device((spi_host_device_t)host_id, &dev_config, &device_handle_1);
+                ESP_LOGI(TAG, "HANDLE_1_CONFIG");
+            }  
+            else if (handle_id == 2) {
+                spi_bus_add_device((spi_host_device_t)host_id, &dev_config, &device_handle_2);
+                ESP_LOGI(TAG, "HANDLE_2_CONFIG");
+            }
+            else {
+                ESP_LOGI(TAG, "HANDLE_INVALID_CONFIG");
+            }
+            
         }
         else
         {
@@ -124,24 +126,27 @@ static void spi_command_handler(char *t_parser, char data_str[])
     }
     else if (strcmp(t_parser, "device_transmit") == 0)
     {
-        esp_err_t err = ESP_FAIL;
         ESP_LOGI(TAG, "DEVICE_TRANSMIT");
         int length;
         int rxlength;
+        int handle_id;
+        esp_err_t err = ESP_OK;
 
         const char d_delim[2] = ",";
         char *d_parser;
 
         d_parser = strtok(data_str, d_delim);
-
         length = atoi(d_parser);
         d_parser = strtok(NULL, d_delim);
         rxlength = atoi(d_parser);
         d_parser = strtok(NULL, d_delim);
+        handle_id = atoi(d_parser);
+        d_parser = strtok(NULL, d_delim);
 
         void *tx_buffer = heap_caps_malloc(length, MALLOC_CAP_DMA | MALLOC_CAP_32BIT);
         void *rx_buffer = heap_caps_malloc(rxlength, MALLOC_CAP_DMA | MALLOC_CAP_32BIT);
-        if (tx_buffer == NULL) {
+        if (tx_buffer == NULL)
+        {
             ESP_LOGE(TAG, "HEAP_CAPS_MALLOC");
             err = ESP_ERR_NO_MEM;
             return err;
@@ -159,24 +164,34 @@ static void spi_command_handler(char *t_parser, char data_str[])
             .length = length * 8,
             .tx_buffer = tx_buffer,
             .rxlength = rxlength * 8,
-            .rx_buffer = rx_buffer
+            .rx_buffer = rx_buffer,
         };
 
         spi_busy = 1;
-        err = spi_device_transmit(device_handle, &trans_desc);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "DEVICE_TRANSMIT: %s", esp_err_to_name(err));
-            return err;
+        if (handle_id == 1) {
+            err = spi_device_transmit(device_handle_1, &trans_desc);;
+            ESP_LOGI(TAG, "HANDLE_ID_1 transmit");
+        }  
+        else if (handle_id == 2) {
+            err = spi_device_transmit(device_handle_2, &trans_desc);
+            ESP_LOGI(TAG, "HANDLE_ID_2 transmit");
         }
-        
-        if (rxlength > 0) {
-            char msg_str[3*rxlength + 1];
+        else {
+            ESP_LOGI(TAG, "HANDLE_ID_INVALID transmit");
+        }
+        if (err != ESP_OK)
+            ESP_LOGE(TAG, "DEVICE_TRANSMIT: %s", esp_err_to_name(err));
+
+        if (rxlength > 0)
+        {
+            char msg_str[3 * rxlength + 1];
             int msg_i = 0;
-            for (int i = 0; i < rxlength; i++) {
+            for (int i = 0; i < rxlength; i++)
+            {
                 msg_i += sprintf(&msg_str[msg_i], "%i,", ((uint8_t *)rx_buffer)[i]);
                 ESP_LOGI(TAG, "DEVICE_TRANSMIT message_read=%i", ((uint8_t *)rx_buffer)[i]);
             }
-            int msg_id = esp_mqtt_client_publish(client, "/console/spi/device_transmit", msg_str, 0, 0, 0);
+            int msg_id = esp_mqtt_client_publish(client, "/console/spi/device_transmit", msg_str, 0, 2, 0);
             ESP_LOGI(TAG, "DEVICE_TRANSMIT published, MSG_ID=%d", msg_id);
         }
 
@@ -186,7 +201,9 @@ static void spi_command_handler(char *t_parser, char data_str[])
     }
     else
     {
-        ESP_LOGE(TAG, "BAD_REQUEST");
+        ESP_LOGE(TAG, "%s", t_parser);
+        ESP_LOGE(TAG, "BAD_SPI_REQUEST");
+        while (1);
     }
 }
 
@@ -241,7 +258,7 @@ static void gpio_command_handler(char *t_parser, char data_str[])
         {
             msg = gpio_get_level(gpio_num);
             itoa(msg, msg_str, 10);
-            msg_id = esp_mqtt_client_publish(client, "/console/gpio/get_level", msg_str, 0, 0, 0);
+            msg_id = esp_mqtt_client_publish(client, "/console/gpio/get_level", msg_str, 0, 2, 0);
             ESP_LOGI(TAG, "GET_LEVEL_FUNC published, MSG_ID=%d", msg_id);
         }
         else
@@ -296,16 +313,30 @@ static void gpio_command_handler(char *t_parser, char data_str[])
             ESP_LOGE(TAG, "BAD_DATA");
         }
     }
+    else if (strcmp(t_parser, "pulldown_en") == 0)
+    {
+        ESP_LOGI(TAG, "PULLDOWN_EN");
+        if (sscanf(data_str, "%i", &gpio_num))
+        {
+            gpio_pulldown_en(gpio_num);
+        }
+        else
+        {
+            ESP_LOGE(TAG, "BAD_DATA");
+        }
+    }
     else
     {
-        ESP_LOGE(TAG, "BAD_REQUEST");
+        ESP_LOGE(TAG, "%s", t_parser);
+        ESP_LOGE(TAG, "BAD_GPIO_REQUEST");
+        while (1);
     }
 }
 
 static void esp_command_handler(esp_mqtt_event_handle_t event)
 {
-    char topic_str[TOPIC_MAX_LEN];
-    char data_str[DATA_MAX_LEN];
+    char* topic_str = malloc(TOPIC_MAX_LEN);
+    char* data_str = malloc(DATA_MAX_LEN);
 
     const char t_delim[2] = "/";
 
@@ -313,6 +344,8 @@ static void esp_command_handler(esp_mqtt_event_handle_t event)
 
     strncpy(topic_str, event->topic, event->topic_len);
     strncpy(data_str, event->data, event->data_len);
+    topic_str[event->topic_len] = '\0';
+    data_str[event->data_len] = '\0';
 
     t_parser = strtok(topic_str, t_delim);
 
@@ -326,15 +359,21 @@ static void esp_command_handler(esp_mqtt_event_handle_t event)
     {
         ESP_LOGI(TAG, "SPI_COMMAND_READ");
         t_parser = strtok(NULL, t_delim);
-        while (spi_busy == 1) {
+        while (spi_busy == 1)
+        {
             ESP_LOGI(TAG, "SPI_BUSY");
         }
         spi_command_handler(t_parser, data_str);
     }
     else
     {
-        ESP_LOGE(TAG, "BAD_REQUEST");
+        ESP_LOGE(TAG, "%s", t_parser);
+        ESP_LOGE(TAG, "BAD_GENERAL_REQUEST");
+        while (1);
     }
+    
+    free(topic_str);
+    free(data_str);
 }
 
 static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
@@ -355,7 +394,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
-        msg_id = esp_mqtt_client_publish(client, "/console/boot", str_mac_addr, 0, 0, 0);
+        msg_id = esp_mqtt_client_publish(client, "/console/boot", str_mac_addr, 0, 2, 0);
         ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
         break;
 
@@ -370,7 +409,9 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "MQTT_EVENT_DATA");
         printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
+        printf("TOPIC_LEN=%d\r\n", event->topic_len);
         printf("DATA=%.*s\r\n", event->data_len, event->data);
+        printf("DATA_LEN=%d\r\n", event->data_len);
         esp_command_handler(event);
         break;
 
@@ -448,22 +489,6 @@ static void mqtt_app_start(void)
 
 void app_main(void)
 {
-    // TEMP
-        const rc522_start_args_t start_args = {
-        .miso_io  = 33,
-        .mosi_io  = 34,
-        .sck_io   = 35,
-        .sda_io   = 15,
-        .callback = &tag_handler,
-
-        // Uncomment next line for attaching RC522 to SPI2 bus. Default is VSPI_HOST (SPI3)
-        //.spi_host_id = HSPI_HOST
-    };
-
-    rc522_start(start_args);
-
-    // TEMP end
-
     ESP_LOGI(TAG, "[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
     ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
@@ -483,5 +508,5 @@ void app_main(void)
 
     ESP_ERROR_CHECK(example_connect());
 
-    // mqtt_app_start();
+    mqtt_app_start();
 }
